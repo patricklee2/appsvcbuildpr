@@ -7,6 +7,7 @@ using LibGit2Sharp;
 using System.Collections.Generic;
 using System.IO;
 using LibGit2Sharp.Handlers;
+using System.Security.AccessControl;
 
 namespace appsvcbuildPR
 {
@@ -14,7 +15,14 @@ namespace appsvcbuildPR
     {
         static void Main(string[] args)
         {
-            createPR();
+            //String stack = "node";
+            //createPR(stack);
+            createPR("dotnetcore");
+            createPR("node");
+            createPR("php");
+            createPR("python");
+            createPR("ruby");
+
             while (true)    //sleep until user exits
             {
                 System.Threading.Thread.Sleep(5000);
@@ -38,25 +46,74 @@ namespace appsvcbuildPR
                 file.CopyTo(Path.Combine(target.FullName, file.Name), true);
         }
 
-        private static Boolean isNodeRepo(Repo r)
+        private static Boolean isDotnetcoreRepo(Repo r)
         {
-            return r.name.ToLower().Contains("node") && !r.name.ToLower().Contains("app");
+            return isStackRepo(r, "dotnetcore");
         }
 
-        public static async void createPR()
+        private static Boolean isNodeRepo(Repo r)
+        {
+            return isStackRepo(r, "node");
+        }
+
+        private static Boolean isPhpRepo(Repo r)
+        {
+            return isStackRepo(r, "php");
+        }
+
+        private static Boolean isPythonRepo(Repo r)
+        {
+            return isStackRepo(r, "python");
+        }
+
+        private static Boolean isRubyRepo(Repo r)
+        {
+            return r.name.ToLower().Contains("ruby") && !r.name.ToLower().Contains("base");
+        }
+
+        private static Boolean isRubyBaseRepo(Repo r)
+        {
+            return r.name.ToLower().Contains("rubybase");
+        }
+
+        private static Boolean isStackRepo(Repo r, String stack)
+        {
+            return r.name.ToLower().Contains(stack) && !r.name.ToLower().Contains("app");
+        }
+
+        public static void rubyBase(List<Repo> repos, String root, String upstream)
+        {
+            Repository repo = new Repository(upstream);
+            foreach (Repo r in repos)
+            {
+                // pull temps
+                String dest = root + "\\" + r.name;
+                Repository.Clone(r.clone_url, dest, new CloneOptions { BranchName = "master" });
+
+                // move
+                String version = r.name.ToLower().Replace("rubybase-", "");
+                DeepCopy(dest, upstream + "\\base_images\\" + version);
+
+                // stage
+                Commands.Stage(repo, upstream + "\\base_images\\" + version);
+            }
+        }
+
+        public static async void createPR(String stack)
         {
             String _gitToken = ""; //fill me in
             // clone master
-            String i = new Random().Next(0, 9999).ToString();
-            String root = String.Format("D:\\home\\site\\wwwroot\\appsvcbuildPR{0}", i);
-            String upstream = root + "\\node";
-            String upstreamURL = "https://github.com/Azure-App-Service/node.git";
+            String timeStamp = DateTime.Now.ToString("yyyyMMddHHmm");
+            String root = String.Format("D:\\home\\site\\wwwroot\\appsvcbuildPR{0}", timeStamp);
+            String upstream = root + "\\" + stack;
+            String upstreamURL = String.Format("https://github.com/Azure-App-Service/{0}.git", stack);
+            String branch = String.Format("appsvcbuild{0}", timeStamp);
             Repository.Clone(upstreamURL, upstream, new CloneOptions { BranchName = "dev" });
 
             // branch
             Repository repo = new Repository(upstream);
-            repo.CreateBranch("appsvcbuild");
-            Commands.Checkout(repo, "appsvcbuild");
+            repo.CreateBranch(branch);
+            Commands.Checkout(repo, branch);
 
             // list temp repos
             HttpClient httpClient = new HttpClient();
@@ -66,20 +123,41 @@ namespace appsvcbuildPR
             response.EnsureSuccessStatusCode();
             string contentString = await response.Content.ReadAsStringAsync();
             List<Repo> resultList = JsonConvert.DeserializeObject<List<Repo>>(contentString);
-            List<Repo> nodeRepos = resultList.FindAll(isNodeRepo);
+            List<Repo> stackRepos = null;
 
-            foreach (Repo r in nodeRepos)
+            switch (stack)
+            {
+                case "dotnetcore":
+                    stackRepos = resultList.FindAll(isDotnetcoreRepo);
+                    break;
+                case "node":
+                    stackRepos = resultList.FindAll(isNodeRepo);
+                    break;
+                case "php":
+                    stackRepos = resultList.FindAll(isPhpRepo);
+                    break;
+                case "python":
+                    stackRepos = resultList.FindAll(isPythonRepo);
+                    break;
+                case "ruby":
+                    stackRepos = resultList.FindAll(isRubyRepo);
+                    rubyBase(resultList.FindAll(isRubyBaseRepo), root, upstream);
+                    break;
+            }
+            // List<Repo> stackRepos = resultList.FindAll(isStackRepo(stack));
+
+            foreach (Repo r in stackRepos)
             {
                 // pull temps
                 String dest = root + "\\" + r.name;
                 Repository.Clone(r.clone_url, dest, new CloneOptions { BranchName = "master" });
 
                 // move
-                String version = r.name.ToLower().Replace("node-", "").Replace('-', '.');
-                DeepCopy(dest, upstream + "//" + version);
+                String version = r.name.ToLower().Replace(stack +"-", "");
+                DeepCopy(dest, upstream + "\\" + version);
 
                 // stage
-                Commands.Stage(repo, upstream + "//" + version);
+                Commands.Stage(repo, upstream + "\\" + version);
             }
 
             
@@ -112,24 +190,32 @@ namespace appsvcbuildPR
                         Username = _gitToken,
                         Password = String.Empty
                     });
-            repo.Network.Push(repo.Branches["appsvcbuild"], options);
+            repo.Network.Push(repo.Branches[branch], options); // fails if branch already exists
             
             //create PR
             
-            String pullRequestURL = String.Format("https://api.github.com/repos/{0}/{1}/pulls?access_token={2}", "azure-app-service", "node", _gitToken);
+            String pullRequestURL = String.Format("https://api.github.com/repos/{0}/{1}/pulls?access_token={2}", "azure-app-service", stack, _gitToken);
             String body =
                 "{ " +
-                    "\"title\": " + JsonConvert.SerializeObject("test") + ", " +
-                    "\"body\": " + JsonConvert.SerializeObject("test") + ", " +
-                    "\"head\": " + JsonConvert.SerializeObject("azure-app-service:appsvcbuild") + ", " +
+                    "\"title\": " + JsonConvert.SerializeObject("sync from templates") + ", " +
+                    "\"body\": " + JsonConvert.SerializeObject("sync from templates") + ", " +
+                    "\"head\": " + JsonConvert.SerializeObject("azure-app-service:" + branch) + ", " +
                     "\"base\": " + JsonConvert.SerializeObject("dev") +
                     
                 "}";
 
             response = await httpClient.PostAsync(pullRequestURL, new StringContent(body)); // fails on empty commits
+            
             String result = await response.Content.ReadAsStringAsync();
             System.Console.WriteLine(response.ToString());
             System.Console.WriteLine(result);
+            if (response.StatusCode == HttpStatusCode.UnprocessableEntity)
+            {
+                System.Console.WriteLine("Unable to make PR due to no differnce");
+            }
+
+            //cleanup
+            //new DirectoryInfo(root).Delete(true);
         }
     }
 }
