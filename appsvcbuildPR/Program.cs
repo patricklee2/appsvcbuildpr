@@ -17,11 +17,11 @@ namespace appsvcbuildPR
         {
             //String stack = "node";
             //createPR(stack);
-            createPR("dotnetcore");
-            createPR("node");
+            //createPR("dotnetcore");
+            //createPR("node");
             createPR("php");
-            createPR("python");
-            createPR("ruby");
+            //createPR("python");
+            //createPR("ruby");
 
             while (true)    //sleep until user exits
             {
@@ -53,7 +53,7 @@ namespace appsvcbuildPR
 
         private static Boolean isNodeRepo(Repo r)
         {
-            return isStackRepo(r, "node");
+            return (isStackRepo(r, "node"));
         }
 
         private static Boolean isPhpRepo(Repo r)
@@ -101,9 +101,9 @@ namespace appsvcbuildPR
 
         public static async void createPR(String stack)
         {
-            String _gitToken = ""; //fill me in
+            String _gitToken = File.ReadAllText("../../../gitToken.txt");
             // clone master
-            String timeStamp = DateTime.Now.ToString("yyyyMMddHHmm");
+            String timeStamp = DateTime.Now.ToString("yyyyMMddHHmmss");
             String root = String.Format("D:\\home\\site\\wwwroot\\appsvcbuildPR{0}", timeStamp);
             String upstream = root + "\\" + stack;
             String upstreamURL = String.Format("https://github.com/Azure-App-Service/{0}.git", stack);
@@ -118,13 +118,24 @@ namespace appsvcbuildPR
             // list temp repos
             HttpClient httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("patricklee2");
-            String generatedReposURL = String.Format("https://api.github.com/orgs/{0}/repos", "blessedimagepipeline");
-            HttpResponseMessage response = await httpClient.GetAsync(generatedReposURL);
-            response.EnsureSuccessStatusCode();
-            string contentString = await response.Content.ReadAsStringAsync();
-            List<Repo> resultList = JsonConvert.DeserializeObject<List<Repo>>(contentString);
+            HttpResponseMessage response = null;
+            List<Repo> resultList = new List<Repo>();
             List<Repo> stackRepos = null;
-
+            int run = 0;
+            while (true)
+            {
+                String generatedReposURL = String.Format("https://api.github.com/orgs/{0}/repos?page={1}&per_page=30&sort=full_name&direction=asc", "blessedimagepipeline", run);
+                response = await httpClient.GetAsync(generatedReposURL);
+                response.EnsureSuccessStatusCode();
+                string contentString = await response.Content.ReadAsStringAsync();
+                List<Repo> l = JsonConvert.DeserializeObject<List<Repo>>(contentString);
+                resultList.AddRange(l);
+                run++;
+                if (l.Count < 30)
+                {
+                    break;
+                }
+            }
             switch (stack)
             {
                 case "dotnetcore":
@@ -148,16 +159,32 @@ namespace appsvcbuildPR
 
             foreach (Repo r in stackRepos)
             {
-                // pull temps
-                String dest = root + "\\" + r.name;
-                Repository.Clone(r.clone_url, dest, new CloneOptions { BranchName = "master" });
+                try
+                {
+                    Console.WriteLine("copying " + r.full_name);
+                    // pull temps
+                    String dest = root + "\\" + r.name;
+                    Repository.Clone(r.clone_url, dest, new CloneOptions { BranchName = "master" });
 
-                // move
-                String version = r.name.ToLower().Replace(stack +"-", "");
-                DeepCopy(dest, upstream + "\\" + version);
+                    // move
+                    String version = r.name.ToLower().Replace(stack + "-", "");
+                    String suffix = "";
+                    if (stack.Equals("php"))
+                    {
+                        suffix =  "-apache";
+                    }
+                    DeepCopy(dest, upstream + "\\" + version + suffix);
 
-                // stage
-                Commands.Stage(repo, upstream + "\\" + version);
+                    // stage
+                    Commands.Stage(repo, upstream + "\\" + version + suffix);
+                }
+                catch (LibGit2Sharp.NameConflictException e)
+                {
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e.ToString());
+                }
             }
 
             
